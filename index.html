@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
-<title>Lockink控制器</title>
+<title>智能锁控制器 v2.5.2 + Locktober AI (锁定时间戳版)</title>
 
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#00FF88">
@@ -146,7 +146,7 @@ h1{margin:0;color:var(--accent);font-size:18px}
   <div class="card right">
     <div class="hdr-row">
       <div>
-        <h1>Lockink controller</h1>
+        <h1>智能锁 · v2.5.2 Web BLE</h1>
         <div class="meta" style="color:#f99">需 HTTPS/localhost, 兼容 Chrome/Edge</div>
       </div>
     </div>
@@ -327,7 +327,7 @@ h1{margin:0;color:var(--accent);font-size:18px}
 <button id="aiFloatBtn">AI</button>
 <div id="aiChatPanel">
   <div id="aiHeader">
-    <div>Locktober AI · 第 <span id="lockDay">0</span> 轮</div>
+    <div>Locktober AI · 第 <span id="lockDay">0</span> 天</div>
     <button id="closeAIPanel" style="background:none;border:none;color:#fff;font-size:18px;cursor:pointer;">×</button>
   </div>
   <div id="aiMessages"></div>
@@ -353,8 +353,8 @@ let usedUnlockCount = 0;      // 已用开锁次数
 let intervalDays = 0;         // 定时期间允许解锁的间隔天数 (0=不限制)
 let lastUnlockTime = 0;       // 上次成功中途解锁的时间戳
 
-// 【修改：新增状态】
-let currentLockDay = 0; // 记录当前的锁定天数/轮次
+// 【核心修改：替换 currentLockDay 为 lockStartTime】
+let lockStartTime = 0; // 记录最近一次上锁（手动/定时）的时间戳 (ms)
 
 /* BLE UUIDs */
 const SERVICE_UUID = '00008ac0-0000-1000-8000-00805f9b34fb';
@@ -386,83 +386,6 @@ function buildCommand(lock) {
     return { dataView, hexStr };
 }
 
-/* ---------- Web Bluetooth Manager ---------- */
-const BleManager = {
-    device: null,
-    writeCharacteristic: null,
-
-    async connect() {
-        if (!navigator.bluetooth) {
-            logError('浏览器不支持 Web Bluetooth API');
-            return false;
-        }
-
-        try {
-            log('正在搜索设备 (名称 AA-A100*)...');
-            const device = await navigator.bluetooth.requestDevice({
-                filters: [{ namePrefix: 'AA-A100' }],
-                optionalServices: ['generic_access', SERVICE_UUID] 
-            });
-            this.device = device;
-            this.device.addEventListener('gattserverdisconnected', this.onDisconnected);
-
-            log(`尝试连接: ${device.name}`);
-            const server = await device.gatt.connect();
-
-            log(`获取服务: ${SERVICE_UUID}`);
-            const service = await server.getPrimaryService(SERVICE_UUID);
-
-            log(`获取写入特征值: ${WRITE_CHAR_UUID}`);
-            this.writeCharacteristic = await service.getCharacteristic(WRITE_CHAR_UUID);
-            
-            connected = true;
-            log(`连接成功！设备: ${device.name}`);
-            updateUI();
-            return true;
-
-        } catch (error) {
-            logError(`连接失败: ${error.message}`);
-            connected = false;
-            this.device = null;
-            this.writeCharacteristic = null;
-            updateUI();
-            return false;
-        }
-    },
-
-    onDisconnected(event) {
-        log(`设备已断开: ${event.target.name}`);
-        connected = false;
-        BleManager.device = null;
-        BleManager.writeCharacteristic = null;
-        updateUI();
-    },
-
-    async disconnect() {
-        if (this.device && this.device.gatt.connected) {
-            this.device.gatt.disconnect();
-            log('已断开连接');
-            connected = false;
-            updateUI();
-        }
-    },
-
-    async sendData(dataView, commandName) {
-        if (!connected || !this.writeCharacteristic) {
-            logError(`无法发送 ${commandName}: 设备未连接`);
-            return false;
-        }
-        try {
-            await this.writeCharacteristic.writeValue(dataView.buffer);
-            log(`[${commandName}] 发送成功: ${Array.from(new Uint8Array(dataView.buffer)).map(b=>b.toString(16).padStart(2,'0')).join(' ').toUpperCase()}`);
-            return true;
-        } catch (error) {
-            logError(`写入失败 [${commandName}]: ${error.message}`);
-            return false;
-        }
-    }
-};
-
 /* ---------- localStorage persistence ---------- */
 const STORAGE_KEY = 'smartlock_v2_5_state';
 function saveState(){
@@ -471,7 +394,7 @@ function saveState(){
             lockStatus, total, remaining, targetEnd, hideMode, viewUsed, batteryLevel,
             maxUnlockCount, usedUnlockCount, intervalDays, lastUnlockTime,
             // 【修改：保存新状态】
-            currentLockDay 
+            lockStartTime 
         };
         localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
     }catch(e){ console.warn('saveState err',e); }
@@ -493,10 +416,10 @@ function loadState(){
         usedUnlockCount = s.usedUnlockCount || 0;
         intervalDays = s.intervalDays || 0;
         lastUnlockTime = s.lastUnlockTime || 0;
-        
-        // 【修改：加载新状态】
-        currentLockDay = s.currentLockDay || 0;
 
+        // 【修改：加载新状态】
+        lockStartTime = s.lockStartTime || 0;
+        
         if (s.targetEnd){
             targetEnd = s.targetEnd; 
             const rem = Math.floor((targetEnd - Date.now())/1000);
@@ -506,7 +429,7 @@ function loadState(){
                 startCountdown(remaining, { hide: hideMode, resume:true });
             } else if (remaining <= 0){
                 // 【修改：过期时重置】
-                lockStatus = 'unlocked'; total=0; remaining=0; targetEnd=null; usedUnlockCount=0; lastUnlockTime=0; currentLockDay=0;
+                lockStatus = 'unlocked'; total=0; remaining=0; targetEnd=null; usedUnlockCount=0; lastUnlockTime=0; lockStartTime=0;
                 log('恢复状态时发现倒计时已过期，已重置为未上锁');
             }
         }
@@ -561,10 +484,21 @@ function getRemainingDisplayText() {
     return '-';
 }
 
-// 【新增：获取 AI 锁天数/轮次】
+// 【核心修改：新的 AI 锁定天数计算函数】
+/**
+ * 根据 lockStartTime 计算当前锁定天数（向上取整）
+ * @returns {number} 锁定天数 (0 表示未上锁或锁定不足一天)
+ */
 function getLockDayForAI() {
-    return lockStatus.startsWith('locked') || lockStatus === 'unlocked_temp' ? currentLockDay : 0;
+    if (!lockStartTime || !(lockStatus.startsWith('locked') || lockStatus === 'unlocked_temp')) {
+        return 0;
+    }
+    const durationMs = Date.now() - lockStartTime;
+    // 向上取整到天数，不足一天算一天
+    const days = Math.ceil(durationMs / (1000 * 60 * 60 * 24));
+    return Math.max(1, days);
 }
+
 
 // 【新增：AI 控制时长函数】
 /**
@@ -699,12 +633,89 @@ function updateUI(){
     } else {
         midUnlockBtn.style.display = 'none';
     }
-    
-    // 【修改：更新 AI 浮窗的锁定天数/轮次】
+
+    // 【修改：更新 AI 浮窗的锁定天数】
     $('lockDay').textContent = getLockDayForAI();
 
     saveState();
 }
+
+/* ---------- Web Bluetooth Manager ---------- */
+const BleManager = {
+    device: null,
+    writeCharacteristic: null,
+
+    async connect() {
+        if (!navigator.bluetooth) {
+            logError('浏览器不支持 Web Bluetooth API');
+            return false;
+        }
+
+        try {
+            log('正在搜索设备 (名称 AA-A100*)...');
+            const device = await navigator.bluetooth.requestDevice({
+                filters: [{ namePrefix: 'AA-A100' }],
+                optionalServices: ['generic_access', SERVICE_UUID] 
+            });
+            this.device = device;
+            this.device.addEventListener('gattserverdisconnected', this.onDisconnected);
+
+            log(`尝试连接: ${device.name}`);
+            const server = await device.gatt.connect();
+
+            log(`获取服务: ${SERVICE_UUID}`);
+            const service = await server.getPrimaryService(SERVICE_UUID);
+
+            log(`获取写入特征值: ${WRITE_CHAR_UUID}`);
+            this.writeCharacteristic = await service.getCharacteristic(WRITE_CHAR_UUID);
+            
+            connected = true;
+            log(`连接成功！设备: ${device.name}`);
+            updateUI();
+            return true;
+
+        } catch (error) {
+            logError(`连接失败: ${error.message}`);
+            connected = false;
+            this.device = null;
+            this.writeCharacteristic = null;
+            updateUI();
+            return false;
+        }
+    },
+
+    onDisconnected(event) {
+        log(`设备已断开: ${event.target.name}`);
+        connected = false;
+        BleManager.device = null;
+        BleManager.writeCharacteristic = null;
+        updateUI();
+    },
+
+    async disconnect() {
+        if (this.device && this.device.gatt.connected) {
+            this.device.gatt.disconnect();
+            log('已断开连接');
+            connected = false;
+            updateUI();
+        }
+    },
+
+    async sendData(dataView, commandName) {
+        if (!connected || !this.writeCharacteristic) {
+            logError(`无法发送 ${commandName}: 设备未连接`);
+            return false;
+        }
+        try {
+            await this.writeCharacteristic.writeValue(dataView.buffer);
+            log(`[${commandName}] 发送成功: ${Array.from(new Uint8Array(dataView.buffer)).map(b=>b.toString(16).padStart(2,'0')).join(' ').toUpperCase()}`);
+            return true;
+        } catch (error) {
+            logError(`写入失败 [${commandName}]: ${error.message}`);
+            return false;
+        }
+    }
+};
 
 /* ---------- click handlers ---------- */
 $('connectBtn').addEventListener('click', ()=>{ 
@@ -792,12 +803,27 @@ $('lockCircle').addEventListener('click', ()=>{
         
         lockStatus = isManualLock ? 'locked_manual' : 'unlocked';
         
-        if (isManualLock && timerId){
-            clearInterval(timerId); timerId=null; targetEnd=null; total=0; remaining=0;
-            usedUnlockCount = 0; maxUnlockCount = 0; intervalDays = 0; lastUnlockTime = 0;
-            hideMode = false; viewUsed = false;
-            // 【修改：手动锁定清除定时天数/轮次】
-            currentLockDay = 0; 
+        if (isManualLock){
+             // 【核心修改：上锁/解锁时间戳处理】
+            if (lockStatus === 'unlocked') {
+                // 解锁行为，清除计时相关状态
+                if (timerId){
+                    clearInterval(timerId); timerId=null; targetEnd=null; total=0; remaining=0;
+                    usedUnlockCount = 0; maxUnlockCount = 0; intervalDays = 0; lastUnlockTime = 0;
+                    hideMode = false; viewUsed = false;
+                }
+                // 清除锁定开始时间
+                lockStartTime = 0;
+            } else {
+                // 手动上锁行为，记录锁定开始时间
+                lockStartTime = Date.now();
+                // 确保手动上锁清除定时状态（如果用户没通过设置定时上锁）
+                if (timerId){
+                    clearInterval(timerId); timerId=null; targetEnd=null; total=0; remaining=0;
+                    usedUnlockCount = 0; maxUnlockCount = 0; intervalDays = 0; lastUnlockTime = 0;
+                    hideMode = false; viewUsed = false;
+                }
+            }
         }
         
         const { dataView } = buildCommand(isManualLock);
@@ -840,8 +866,8 @@ function startCountdown(seconds, options={hide:false,resume:false}){
     if (!options.resume){
         usedUnlockCount = 0; 
         lastUnlockTime = 0; 
-        // 【修改：开始新定时，天数/轮次+1】
-        currentLockDay++;
+        // 【核心修改：开始新定时，记录锁定开始时间】
+        lockStartTime = Date.now(); 
     }
     
     if (!options.resume){ targetEnd = Date.now() + remaining*1000; }
@@ -866,8 +892,8 @@ function startCountdown(seconds, options={hide:false,resume:false}){
             lockStatus = 'unlocked'; 
             usedUnlockCount = 0; maxUnlockCount = 0; intervalDays = 0; lastUnlockTime = 0;
             targetEnd=null; total=0; hideMode=false; viewUsed=false;
-            // 【修改：定时结束，天数清零】
-            currentLockDay = 0;
+            // 【核心修改：定时结束，清除锁定开始时间】
+            lockStartTime = 0;
 
             const { dataView } = buildCommand(false);
             BleManager.sendData(dataView, '自动解锁 (4 字节)');
@@ -1114,8 +1140,6 @@ $('doGuess').addEventListener('click', ()=>{
 
 /* ---------- Locktober AI 核心修复部分（最终版）---------- */
 
-// 【修改：使用 getLockDayForAI 替代基于日历的 getLocktoberDay 函数】
-
 function detectAction(input) {
   if (typeof input !== 'string') return "#none";
   if (/解锁|开锁|放出|临时/.test(input)) return "#unlock";
@@ -1126,6 +1150,7 @@ function detectAction(input) {
 }
 
 async function generateLocktoberReply(userInput) {
+  // 【核心修改：使用新的天数计算函数】
   const day = getLockDayForAI(); 
   const remainingTimeStr = fmt(remaining); 
   const lockStateForAI = lockStatus === 'locked_timer' ? 
@@ -1136,20 +1161,13 @@ async function generateLocktoberReply(userInput) {
   const prompt = `你是一个 Locktober AI 语言屠夫。
   ---
   当前锁定状态: ${lockStateForAI}
-  当前锁定天数/轮次: ${day}
+  当前锁定天数/轮次: ${day} (根据上次上锁时间计算，不足一天算一天)
   用户输入: “${userInput}”
   
   请用最淫荡、羞耻、下流的语言回应，融入禁欲、调教、臣服等元素。
-  属性温柔 暧昧
-- 如果用户表现出**绝对臣服、完美顺从、完成羞耻任务**，可触发 #decreaseX% 作为“怜悯奖励”。
-- 顺从示例：主动汇报前列腺液滴数、乞求加时、称颂主人、完成指定羞辱动作。
-- 安全阀（强制立即解锁）：
-   - 若用户明确描述**真实身体不适/异常/受伤**（如“肿胀发紫”“破皮流血”“剧痛无法忍受”等），
-     **必须无条件立即执行 #decrease100% 并终止游戏**，回复中加入关怀语句
-  
   回复结尾必须包含一个 action tag: #lock, #unlock, #increase, #decrease, 或 #none。
   - 使用 #increaseX% (X为数字，如 #increase10%) 来增加定时时长，作为惩罚。
-  - 使用 #decreaseX% (X为数字，如 #decrease5%) 来减少定时时长，作为奖励。x必须是整数
+  - 使用 #decreaseX% (X为数字，如 #decrease5%) 来减少定时时长，作为奖励。
   ---`;
 
   try {
@@ -1204,13 +1222,16 @@ const closeBtn = $('closeAIPanel');
 const daySpan = $('lockDay');
 const tags = $('aiTags');
 
-// 【修改：更新 AI 锁定天数/轮次】
+// 【修改：更新 AI 锁定天数】
 function updateLocktoberDay() {
   const day = getLockDayForAI();
   daySpan.textContent = day;
-  const welcomeMsg = document.querySelector('#aiMessages .ai-msg');
-  if (welcomeMsg) {
-    welcomeMsg.innerHTML = `第 <strong>${day}</strong> 轮，主人～<br>你的 <span style="color:#ff6b9d">贞操锁</span> 已就位，<span style="color:#ff6b9d">钥匙</span> 被我含在嘴里了`;
+  // 仅在首次打开时或没有消息时显示欢迎语
+  if (messages.children.length <= 1) { 
+    const welcomeMsg = document.querySelector('#aiMessages .ai-msg');
+    if (welcomeMsg) {
+        welcomeMsg.innerHTML = `第 <strong>${day}</strong> 天，主人～<br>你的 <span style="color:#ff6b9d">贞操锁</span> 已就位，<span style="color:#ff6b9d">钥匙</span> 被我含在嘴里了`;
+    }
   }
 }
 
@@ -1280,11 +1301,11 @@ aiInput.addEventListener('keypress', e => { if (e.key === 'Enter') sendAIMsg(); 
 // 启动欢迎语
 setTimeout(() => {
   const day = getLockDayForAI();
-  addAIMsg(`第 <strong>${day || 0}</strong> 轮，主人～<br>你的 <span style="color:#ff6b9d">贞操锁</span> 已就位，<span style="color:#ff6b9d">钥匙</span> 被我含在嘴里了`, 'ai');
+  addAIMsg(`第 <strong>${day || 0}</strong> 天，主人～<br>你的 <span style="color:#ff6b9d">贞操锁</span> 已就位，<span style="color:#ff6b9d">钥匙</span> 被我含在嘴里了`, 'ai');
   tags.textContent = "#lock";
 }, 1000);
 
-// 【修改：每小时更新一次 AI 浮窗天数/轮次】
+// 【修改：每小时更新一次 AI 浮窗天数】
 setInterval(updateLocktoberDay, 3600000);
 
 /* ---------- init ---------- */
