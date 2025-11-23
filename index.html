@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
-<title>智能锁控制器 v2.5.2 + Locktober AI (AI接管版)</title>
+<title>智能锁控制器 v2.5.2 + Locktober AI (AI绝对控制版)</title>
 
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#00FF88">
@@ -406,7 +406,7 @@ function aiDirectLock() {
     // 步骤 2: 设置 AI 手动锁定状态
     lockStatus = 'locked_manual';
     lockStartTime = Date.now();                     // 记录手动上锁时间，AI 天数继续涨
-    aiManualLockEnabled = true;
+    aiManualLockEnabled = true; // 开启 AI 绝对控制模式
 
     // 步骤 3: 发送命令并更新
     const { dataView } = buildCommand(true);
@@ -432,7 +432,7 @@ function aiDirectUnlock() {
     
     // 步骤 2: 设置解锁状态
     lockStatus = 'unlocked';
-    aiManualLockEnabled = false;
+    aiManualLockEnabled = false; // 关闭 AI 绝对控制模式
     lockStartTime = 0;  // 手动解锁后天数归零
 
     // 步骤 3: 发送命令并更新
@@ -829,7 +829,17 @@ midUnlockBtn.addEventListener('click', () => {
 $('lockCircle').addEventListener('click', ()=>{
     if (!connected) { logError('请先连接设备'); showToast('设备未连接', '请点击 "连接设备" 按钮', true); return; }
     
-    // 【新增：处理定时锁定中的查看/中途解锁逻辑】
+    // 【新增修复逻辑：AI 手动锁定模式下，阻止用户解锁】
+    if (lockStatus === 'locked_manual' && aiManualLockEnabled) {
+        log('阻止解锁：AI 亲自上锁，用户无权点击圆环解锁。');
+        showToast('🔑 无权操作！', '钥匙在我手里，你不配解开', true);
+        const c=$('lockCircle'); 
+        c.classList.add('flash-fail'); 
+        setTimeout(()=>c.classList.remove('flash-fail'),1600);
+        return; 
+    }
+    
+    // 【处理定时锁定中的查看/中途解锁逻辑 (保持不变)】
     if (lockStatus === 'locked_timer') {
         const unlockLeft = maxUnlockCount - usedUnlockCount;
         const daysPassed = (Date.now() - lastUnlockTime) / (1000 * 3600 * 24);
@@ -861,7 +871,7 @@ $('lockCircle').addEventListener('click', ()=>{
         return;
     }
 
-    // 【新增：处理临时解锁后的重锁逻辑】
+    // 【处理临时解锁后的重锁逻辑 (保持不变)】
     if (lockStatus === 'unlocked_temp'){
         lockStatus = 'locked_timer'; 
         aiManualLockEnabled = false; // 临时解锁后重锁，不再是AI手动模式
@@ -874,8 +884,9 @@ $('lockCircle').addEventListener('click', ()=>{
         return;
     }
 
-    // 【修改：处理手动上锁/解锁逻辑，确保清除定时状态】
+    // 【处理用户手动上锁/解锁逻辑 (原逻辑已调整，现仅处理非AI手动锁)】
     if (lockStatus === 'locked_manual' || lockStatus === 'unlocked') {
+        // 到达这里的 locked_manual 必然是 aiManualLockEnabled === false 的状态 (用户自己锁的)
         const isLockAction = lockStatus === 'unlocked';
         
         // 步骤 1: 清除定时状态
@@ -889,11 +900,11 @@ $('lockCircle').addEventListener('click', ()=>{
         if (isLockAction) {
             lockStatus = 'locked_manual';
             lockStartTime = Date.now(); 
-            aiManualLockEnabled = false; // 用户手动上锁，清除 AI 手动锁状态
+            aiManualLockEnabled = false; // 用户手动上锁，AI 手动锁状态保持为 false
         } else {
             lockStatus = 'unlocked';
             lockStartTime = 0; 
-            aiManualLockEnabled = false; // 用户手动解锁，清除 AI 手动锁状态
+            aiManualLockEnabled = false; // 用户手动解锁，AI 手动锁状态保持为 false
         }
 
         // 步骤 3: 发送命令并更新UI
@@ -904,6 +915,7 @@ $('lockCircle').addEventListener('click', ()=>{
         return;
     }
 });
+
 
 $('batteryBtn').addEventListener('click', ()=>{
     if (!connected) { logError('请先连接设备'); showToast('设备未连接', '请点击 "连接设备" 按钮', true); return; }
@@ -1227,7 +1239,7 @@ async function generateLocktoberReply(userInput) {
   const lockStateForAI = lockStatus === 'locked_timer' ? 
       `定时锁定中，剩余 ${remainingTimeStr}` : 
       lockStatus === 'locked_manual' ? 
-      (aiManualLockEnabled ? 'AI 手动锁定中' : '用户手动锁定中') : '未上锁';
+      (aiManualLockEnabled ? 'AI 手动锁定中（绝对控制）' : '用户手动锁定中') : '未上锁';
 
   /* 修改 generateLocktoberReply 中的 prompt，加入手动开关锁指令（放在安全阀前面） */
   const prompt = `你是一个 Locktober AI 语言屠夫。
@@ -1242,7 +1254,7 @@ async function generateLocktoberReply(userInput) {
 【新增能力】你现在可以直接手动控制锁！
 - 想立刻给奴隶上锁 → 回复结尾加 #ailock
 - 想立刻给奴隶解锁 → 回复结尾加 #aiunlock
-（这会直接走手动锁模式，并清除所有定时状态）
+（这会直接走手动锁模式，并清除所有定时状态，用户无法自己解锁）
 
 - 如果用户表现出**绝对臣服、完美顺从、完成羞耻任务**，可触发 #decreaseX% 作为“怜悯奖励”。
 - 使用 #increaseX% / #decreaseX% 调整定时时间（仅当当前是定时模式时生效）
@@ -1305,7 +1317,7 @@ const tags = $('aiTags');
 
 // 【修改：更新 AI 锁定天数】
 function updateLocktoberDay() {
-  const day = getLockDayForAI();
+  const day = getLockDayForAI(); 
   daySpan.textContent = day;
   // 仅在首次打开时或没有消息时显示欢迎语
   if (messages.children.length <= 1) { 
@@ -1382,42 +1394,4 @@ async function sendAIMsg() {
                   adjustTimeByAI(pct, isInc);
               } else {
                   // 即使是非定时模式，也显示一下“想调整但没定时”的提示
-                  showToast(isInc ? 'AI 想惩罚你' : 'AI 想奖励你', '但当前不是定时模式～', false);
-              }
-          }
-      }
-      // 忽略 #lock 和 #unlock，因为它们已经被更强大的 #ailock / #aiunlock 标签取代了
-  }
-
-  updateLocktoberDay();
-  messages.scrollTop = messages.scrollHeight;
-}
-
-sendBtn.onclick = sendAIMsg;
-aiInput.addEventListener('keypress', e => { if (e.key === 'Enter') sendAIMsg(); });
-
-// 启动欢迎语
-setTimeout(() => {
-  const day = getLockDayForAI();
-  addAIMsg(`第 <strong>${day || 0}</strong> 天，主人～<br>你的 <span style="color:#ff6b9d">贞操锁</span> 已就位，<span style="color:#ff6b9d">钥匙</span> 被我含在嘴里了`, 'ai');
-  tags.textContent = "#none";
-}, 1000);
-
-// 【修改：每小时更新一次 AI 浮窗天数】
-setInterval(updateLocktoberDay, 3600000);
-
-/* ---------- init ---------- */
-renderCalendar(); 
-renderSelectors(); 
-renderDateHM(); 
-const had = loadState();
-if (!had) {
-  updateUI();
-  log('v2.5.2 Web BLE (AI 接管版) 已就绪 — 请点击 "连接设备" 按钮开始。');
-} else {
-  updateUI(); 
-  log('恢复本地存储状态。请重新点击 "连接设备" 按钮连接 BLE 设备。');
-}
-</script>
-</body>
-</html>
+                  showToast(isInc ? 'AI 想惩罚你' : 'AI
