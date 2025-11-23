@@ -3,13 +3,13 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
-<title>智能锁控制器 v2.5.3 + Locktober AI (锁定时间戳版)</title>
+<title>智能锁控制器 v2.5.2 + Locktober AI (锁定时间戳版)</title>
 
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#00FF88">
 
 <style>
-/* === 原有完整样式（v2.5.3）=== */
+/* === 原有完整样式（v2.5.2）=== */
 :root{
   --bg1:#06070a; --bg2:#0f1116; --card:#0f1214;
   --accent:#00ff88; --accent-2:#38d04b; --muted:#9aa0a6;
@@ -146,7 +146,7 @@ h1{margin:0;color:var(--accent);font-size:18px}
   <div class="card right">
     <div class="hdr-row">
       <div>
-        <h1>智能锁 · v2.5.3 Web BLE</h1>
+        <h1>智能锁 · v2.5.2 Web BLE</h1>
         <div class="meta" style="color:#f99">需 HTTPS/localhost, 兼容 Chrome/Edge</div>
       </div>
     </div>
@@ -278,7 +278,7 @@ h1{margin:0;color:var(--accent);font-size:18px}
     <div class="modal">
     <h3>抽奖（10% ~ 60%）</h3>
     <p class="lead">仅在定时锁定（非手动）可用</p>
-    <div class="lottery-anim" style="height:72px;border-radius:10px;background:#0f0f10;display:flex;align-items:center;justify-content:center;margin:12px 0"><span style="opacity:.2">正在抽奖…</span></div>
+    <div class="lottery- lutego" style="height:72px;border-radius:10px;background:#0f0f10;display:flex;align-items:center;justify-content:center;margin:12px 0"><span style="opacity:.2">正在抽奖…</span></div>
     <div id="lotteryResult" style="display:none;text-align:center">
         <div id="lotteryMain" style="font-size:18px"></div>
         <div id="lotteryDetail" class="muted" style="margin-top:6px"></div>
@@ -341,9 +341,6 @@ h1{margin:0;color:var(--accent);font-size:18px}
 <script src="https://js.puter.com/v2/"></script>
 <script>
 /* ---------- constants & state ---------- */
-// 【定义您的 Cloudflare Worker API URL】
-const WORKER_API_URL = 'https://wispy-forest-3d27.jdjdjduisk.workers.dev/';
-
 const MAX_SECONDS = 90 * 24 * 3600;
 const MIN_SECONDS = 60;
 let connected=false, total=0, remaining=0, timerId=null, targetEnd=null;
@@ -371,20 +368,12 @@ const midUnlockBtn = $('midUnlockBtn');
 /* logging */
 function log(msg){
   const area = $('log'); const ts = new Date().toLocaleTimeString();
-  area.textContent += `[\( {ts}] \){msg}\n`; area.scrollTop = area.scrollHeight; console.log(msg);
+  area.textContent += `[${ts}] ${msg}\n`; area.scrollTop = area.scrollHeight; console.log(msg);
 }
 function logError(msg){ log(`错误: ${msg}`); }
 
 /* format */
-function fmt(sec){ if(!sec||sec<=0) return '0秒'; const d=Math.floor(sec/86400), h=Math.floor((sec%86400)/3600), m=Math.floor((sec%3600)/60), s=sec%60; return `\( {d?d+'天 ':''} \){h?h+'小时 ':''}\( {m?m+'分 ':''} \){s}秒`; }
-
-/* toast */
-function showToast(title, detail='', isError=false){
-  const t = $('guessToast');
-  t.innerHTML = `<strong>\( {title}</strong><div class="muted"> \){detail}</div>`;
-  t.className = `toast ${isError?'error':''} show`;
-  clearTimeout(t._hide); t._hide = setTimeout(()=>t.className='toast', 3800);
-}
+function fmt(sec){ if(!sec||sec<=0) return '0秒'; const d=Math.floor(sec/86400), h=Math.floor((sec%86400)/3600), m=Math.floor((sec%3600)/60), s=sec%60; return `${d?d+'天 ':''}${h?h+'小时 ':''}${m?m+'分 ':''}${s}秒`; }
 
 /**
  * V2.5 统一命令：构建 4 字节开关锁 BLE 命令
@@ -397,89 +386,26 @@ function buildCommand(lock) {
     return { dataView, hexStr };
 }
 
-/* ---------- 远程时间获取 (修复：切换到 timeapi.io) ---------- */
-
-/**
- * 从 timeapi.io 获取当前精确的 UTC 时间戳 (毫秒)
- * @returns {number} UTC 毫秒时间戳
- */
-async function getRemoteTime() {
-    try {
-        const response = await fetch('https://www.timeapi.io/api/Time/current/zone?timeZone=UTC', { cache: 'no-store' });
-        if (!response.ok) {
-            throw new Error(`Time API error: ${response.status}`);
-        }
-        const data = await response.json();
-        
-        // timeapi.io 返回秒级 Unix 时间戳 (unixTime)
-        return data.unixTime * 1000;
-    } catch (e) {
-        logError(`无法获取远程时间 (timeapi.io): ${e.message}。将使用本地时间作为后备（不安全）。`);
-        // 后备：如果网络或 API 失败，使用本地时间
-        return Date.now();
-    }
-}
-
-/* ---------- Worker KV persistence (重写) ---------- */
-
-// 【新 saveState：使用 Worker PUT 请求，带重试】
-async function saveState(retries = 3){
-    for(let i = 0; i < retries; i++){
-        try{
-            const state = { 
-                lockStatus, total, remaining, targetEnd, hideMode, viewUsed, batteryLevel,
-                maxUnlockCount, usedUnlockCount, intervalDays, lastUnlockTime,
-                lockStartTime, _savedAt: await getRemoteTime()
-            };
-            
-            const response = await fetch(WORKER_API_URL, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(state),
-                cache: 'no-store'
-            });
-
-            if (!response.ok) {
-                const errorData = await response.json().catch(() => ({}));
-                throw new Error(errorData.detail || response.statusText);
-            }
-
-            console.log('State saved to Worker KV successfully.');
-            return true;
-        }catch(e){ 
-            console.error('saveState attempt', i+1, 'failed:', e); 
-            if (i === retries - 1) {
-                logError(`状态保存失败 (重试 \( {retries} 次后): \){e.message}`);
-                return false; 
-            }
-            await new Promise(r => setTimeout(r, 500 * (i + 1))); // 递增延迟
-        }
-    }
-}
-
-// 【新 loadState：使用 Worker GET 请求，带校验】
-async function loadState(){
+/* ---------- localStorage persistence ---------- */
+const STORAGE_KEY = 'smartlock_v2_5_state';
+function saveState(){
     try{
-        const response = await fetch(WORKER_API_URL, {
-            method: 'GET',
-            headers: { 'Content-Type': 'application/json' },
-            cache: 'no-store'
-        });
+        const state = { 
+            lockStatus, total, remaining, targetEnd, hideMode, viewUsed, batteryLevel,
+            maxUnlockCount, usedUnlockCount, intervalDays, lastUnlockTime,
+            // 【修改：保存新状态】
+            lockStartTime 
+        };
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    }catch(e){ console.warn('saveState err',e); }
+}
 
-        if (!response.ok) {
-            const errorData = await response.json().catch(() => ({}));
-            throw new Error(errorData.detail || response.statusText);
-        }
-
-        const s = await response.json();
+function loadState(){
+    try{
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if(!raw) return false;
+        const s = JSON.parse(raw);
         
-        // 检查返回的数据是否有效（避免空对象或默认值）
-        if (!s || !s._savedAt || typeof s.lockStatus !== 'string') {
-            log('Worker KV 中无有效状态数据，使用默认/初始状态。');
-            return false;
-        }
-        
-        // 恢复状态
         lockStatus = s.lockStatus || 'unlocked'; 
         total = s.total || 0; 
         hideMode = !!s.hideMode; 
@@ -490,43 +416,49 @@ async function loadState(){
         usedUnlockCount = s.usedUnlockCount || 0;
         intervalDays = s.intervalDays || 0;
         lastUnlockTime = s.lastUnlockTime || 0;
+
+        // 【修改：加载新状态】
         lockStartTime = s.lockStartTime || 0;
         
-        // 【核心修改：获取远程时间来检查过期】
-        const nowRemote = await getRemoteTime();
-
         if (s.targetEnd){
             targetEnd = s.targetEnd; 
-            // 使用远程时间计算剩余时间
-            const rem = Math.floor((targetEnd - nowRemote)/1000); 
+            const rem = Math.floor((targetEnd - Date.now())/1000);
             remaining = Math.max(0, rem);
 
             if ((lockStatus.startsWith('locked') || lockStatus === 'unlocked_temp') && remaining > 0){
-                // 恢复定时器时，使用 resume:true
-                startCountdown(remaining, { hide: hideMode, resume:true }); 
+                startCountdown(remaining, { hide: hideMode, resume:true });
             } else if (remaining <= 0){
-                // 【过期时重置状态】
+                // 【修改：过期时重置】
                 lockStatus = 'unlocked'; total=0; remaining=0; targetEnd=null; usedUnlockCount=0; lastUnlockTime=0; lockStartTime=0;
                 log('恢复状态时发现倒计时已过期，已重置为未上锁');
             }
         }
-        
-        log('成功从 Worker KV 加载状态。');
         return true;
-    }catch(e){ 
-        console.error('loadState network err', e); 
-        logError(`状态加载网络错误: ${e.message}`);
-        return false; 
+    }catch(e){ console.warn('loadState err', e); return false; }
+}
+
+/**
+ * Toast 提示函数
+ */
+function showToast(mainMsg, detailMsg, isError = false) { 
+    const t=$('guessToast'); 
+    t.innerHTML = `<div style="font-size:16px">${mainMsg}</div>${detailMsg ? `<div class="muted" style="margin-top:2px">${detailMsg}</div>` : ''}`;
+    t.classList.remove('show', 'error');
+    if (isError) {
+        t.classList.add('error');
     }
+    t.classList.add('show'); 
+    t.style.display='block'; 
+    setTimeout(()=>{ t.classList.remove('show'); t.style.display='none'; },2800); 
 }
 
 /**
  * 执行中途解锁
  */
-async function executeMidUnlock() { 
+function executeMidUnlock() {
     lockStatus = 'unlocked_temp';
     usedUnlockCount++;
-    lastUnlockTime = await getRemoteTime();
+    lastUnlockTime = Date.now();
 
     const { dataView } = buildCommand(false);
     BleManager.sendData(dataView, '定时期间允许解锁 (4 字节)');
@@ -553,19 +485,28 @@ function getRemainingDisplayText() {
 }
 
 // 【核心修改：新的 AI 锁定天数计算函数】
-async function getLockDayForAI() { 
+/**
+ * 根据 lockStartTime 计算当前锁定天数（向上取整）
+ * @returns {number} 锁定天数 (0 表示未上锁或锁定不足一天)
+ */
+function getLockDayForAI() {
     if (!lockStartTime || !(lockStatus.startsWith('locked') || lockStatus === 'unlocked_temp')) {
         return 0;
     }
-    const nowRemote = await getRemoteTime();
-    const durationMs = nowRemote - lockStartTime;
+    const durationMs = Date.now() - lockStartTime;
     // 向上取整到天数，不足一天算一天
     const days = Math.ceil(durationMs / (1000 * 60 * 60 * 24));
     return Math.max(1, days);
 }
 
+
 // 【新增：AI 控制时长函数】
-async function adjustTimeByAI(percentage, isIncrease) { 
+/**
+ * 根据百分比调整剩余锁定时间
+ * @param {number} percentage - 调整的百分比 (例如: 10)
+ * @param {boolean} isIncrease - true 为增加, false 为减少
+ */
+function adjustTimeByAI(percentage, isIncrease) {
     if (lockStatus !== 'locked_timer') {
         logError('AI 无法控制：未处于定时锁定状态。');
         showToast('AI 控制失败', '未处于定时锁定状态', true);
@@ -582,19 +523,19 @@ async function adjustTimeByAI(percentage, isIncrease) {
         remaining = Math.max(remaining - delta, MIN_SECONDS);
     }
     
-    const nowRemote = await getRemoteTime();
-    targetEnd = nowRemote + remaining * 1000;
+    targetEnd = Date.now() + remaining * 1000;
     
     const { dataView } = buildCommand(true);
-    BleManager.sendData(dataView, `AI \( {action}定时 ( \){percentage}%)`);
+    BleManager.sendData(dataView, `AI ${action}定时 (${percentage}%)`);
     
-    showToast(`AI 惩罚/奖励`, `\( {action} \){percentage}% (\( {sign} \){fmt(delta)})，时间已更新`, false);
-    log(`AI \( {action} \){percentage}% (\( {sign} \){fmt(delta)})，新剩余 ${fmt(remaining)}`);
+    showToast(`AI 惩罚/奖励`, `${action} ${percentage}% (${sign}${fmt(delta)})，时间已更新`, false);
+    log(`AI ${action} ${percentage}% (${sign}${fmt(delta)})，新剩余 ${fmt(remaining)}`);
     updateUI();
 }
 
+
 /* UI update */
-async function updateUI(){ 
+function updateUI(){
     const connState = connected ? '已连接' : (BleManager.device ? '断开' : '未连接');
     $('connStatus').textContent = connState;
     $('connectBtn').textContent = connected ? '断开连接' : '连接设备';
@@ -610,12 +551,12 @@ async function updateUI(){
         const unlockLeft = maxUnlockCount - usedUnlockCount;
         lockStatusText = isTempUnlocked ? '临时解锁' : (hideMode ? '定时（隐藏）' : '定时锁定');
         if (maxUnlockCount > 0 && !hideMode) {
-            lockStatusText += ` (\( {Math.max(0, unlockLeft)}/ \){maxUnlockCount} 次)`;
+            lockStatusText += ` (${Math.max(0, unlockLeft)}/${maxUnlockCount} 次)`;
         }
     }
     $('lockStatusDisplay').textContent = lockStatusText;
 
-    \( ('countShort').textContent = ` \){batteryLevel}%`;
+    $('countShort').textContent = `${batteryLevel}%`;
     
     let targetTimeDisplay = targetEnd ? new Date(targetEnd).toLocaleString() : '-';
     if ((lockStatus === 'locked_timer' || lockStatus === 'unlocked_temp') && hideMode) {
@@ -625,7 +566,7 @@ async function updateUI(){
     
     let remainingDisplay = getRemainingDisplayText();
     
-    const circle = \( ('lockCircle'), title = \)('circleTitle'), sub = $('circleSub');
+    const circle = $('lockCircle'), title = $('circleTitle'), sub = $('circleSub');
 
     circle.classList.remove('locked_timer', 'locked_manual', 'flash-success', 'flash-fail'); 
 
@@ -649,7 +590,7 @@ async function updateUI(){
              subText = remainingDisplay;
              if (maxUnlockCount > 0) {
                  const dayStr = intervalDays > 0 ? ` (≥${intervalDays}天)` : '';
-                 subText += (subText !== '-') ? ` - 剩 \( {Math.max(0, unlockLeft)} 次 \){dayStr}` : `剩余 \( {Math.max(0, unlockLeft)} 次 \){dayStr}`;
+                 subText += (subText !== '-') ? ` - 剩 ${Math.max(0, unlockLeft)} 次${dayStr}` : `剩余 ${Math.max(0, unlockLeft)} 次${dayStr}`;
              }
              circle.title = isTempUnlocked ? '点击重锁' : 
                             (hasUnlockPermission ? `点击中途解锁 (剩 ${Math.max(0, unlockLeft)} 次)` : '定时锁定中');
@@ -676,9 +617,7 @@ async function updateUI(){
         midUnlockBtn.style.display = 'inline-block';
         
         const unlockLeft = maxUnlockCount - usedUnlockCount;
-        // 【使用远程时间判断间隔】
-        const nowRemote = await getRemoteTime(); 
-        const daysPassed = (nowRemote - lastUnlockTime) / (1000 * 3600 * 24);
+        const daysPassed = (Date.now() - lastUnlockTime) / (1000 * 3600 * 24);
         const intervalOk = intervalDays === 0 || lastUnlockTime === 0 || daysPassed >= intervalDays;
         
         if (unlockLeft <= 0 || !intervalOk) {
@@ -687,7 +626,7 @@ async function updateUI(){
             midUnlockBtn.style.background = '#444';
         } else {
             midUnlockBtn.disabled = false;
-            midUnlockBtn.textContent = hideMode ? `中途解锁` : `中途解锁 (\( {Math.max(0, unlockLeft)}/ \){maxUnlockCount})`;
+            midUnlockBtn.textContent = hideMode ? `中途解锁` : `中途解锁 (${Math.max(0, unlockLeft)}/${maxUnlockCount})`;
             midUnlockBtn.style.background = '#ff8c42';
         }
         
@@ -696,9 +635,9 @@ async function updateUI(){
     }
 
     // 【修改：更新 AI 浮窗的锁定天数】
-    $('lockDay').textContent = await getLockDayForAI();
+    $('lockDay').textContent = getLockDayForAI();
 
-    await saveState(); 
+    saveState();
 }
 
 /* ---------- Web Bluetooth Manager ---------- */
@@ -769,10 +708,10 @@ const BleManager = {
         }
         try {
             await this.writeCharacteristic.writeValue(dataView.buffer);
-            log(`[\( {commandName}] 发送成功: \){Array.from(new Uint8Array(dataView.buffer)).map(b=>b.toString(16).padStart(2,'0')).join(' ').toUpperCase()}`);
+            log(`[${commandName}] 发送成功: ${Array.from(new Uint8Array(dataView.buffer)).map(b=>b.toString(16).padStart(2,'0')).join(' ').toUpperCase()}`);
             return true;
         } catch (error) {
-            logError(`写入失败 [\( {commandName}]: \){error.message}`);
+            logError(`写入失败 [${commandName}]: ${error.message}`);
             return false;
         }
     }
@@ -783,7 +722,7 @@ $('connectBtn').addEventListener('click', ()=>{
     if (connected) { BleManager.disconnect(); } else { BleManager.connect(); }
 });
 
-midUnlockBtn.addEventListener('click', async () => { 
+midUnlockBtn.addEventListener('click', () => {
     if (lockStatus !== 'locked_timer' && lockStatus !== 'unlocked_temp') return; 
 
     if (lockStatus === 'unlocked_temp') {
@@ -792,10 +731,7 @@ midUnlockBtn.addEventListener('click', async () => {
     }
 
     const unlockLeft = maxUnlockCount - usedUnlockCount;
-    
-    // 【使用远程时间判断间隔】
-    const nowRemote = await getRemoteTime();
-    const daysPassed = (nowRemote - lastUnlockTime) / (1000 * 3600 * 24);
+    const daysPassed = (Date.now() - lastUnlockTime) / (1000 * 3600 * 24);
     const intervalOk = intervalDays === 0 || lastUnlockTime === 0 || daysPassed >= intervalDays;
 
     if (!connected) {
@@ -804,7 +740,7 @@ midUnlockBtn.addEventListener('click', async () => {
     }
 
     if (unlockLeft > 0 && intervalOk) {
-        await executeMidUnlock();
+        executeMidUnlock();
     } else {
         if (unlockLeft <= 0) {
             showToast('解锁失败', '已达到设置的最大开锁次数', true);
@@ -817,7 +753,7 @@ midUnlockBtn.addEventListener('click', async () => {
     }
 });
 
-$('lockCircle').addEventListener('click', async ()=>{ 
+$('lockCircle').addEventListener('click', ()=>{
     if (!connected) { logError('请先连接设备'); showToast('设备未连接', '请点击 "连接设备" 按钮', true); return; }
 
     if (lockStatus === 'locked_timer' && hideMode) {
@@ -832,14 +768,11 @@ $('lockCircle').addEventListener('click', async ()=>{
     
     if (lockStatus === 'locked_timer' && !hideMode){
         const unlockLeft = maxUnlockCount - usedUnlockCount;
-        
-        // 【使用远程时间判断间隔】
-        const nowRemote = await getRemoteTime(); 
-        const daysPassed = (nowRemote - lastUnlockTime) / (1000 * 3600 * 24);
+        const daysPassed = (Date.now() - lastUnlockTime) / (1000 * 3600 * 24);
         const intervalOk = intervalDays === 0 || lastUnlockTime === 0 || daysPassed >= intervalDays;
         
         if (unlockLeft > 0 && intervalOk) {
-            await executeMidUnlock();
+            executeMidUnlock();
             return;
         } 
         
@@ -882,8 +815,8 @@ $('lockCircle').addEventListener('click', async ()=>{
                 // 清除锁定开始时间
                 lockStartTime = 0;
             } else {
-                // 手动上锁行为，记录锁定开始时间 (使用远程时间)
-                lockStartTime = await getRemoteTime();
+                // 手动上锁行为，记录锁定开始时间
+                lockStartTime = Date.now();
                 // 确保手动上锁清除定时状态（如果用户没通过设置定时上锁）
                 if (timerId){
                     clearInterval(timerId); timerId=null; targetEnd=null; total=0; remaining=0;
@@ -918,7 +851,7 @@ $('batteryBtn').addEventListener('click', ()=>{
 
 /* ---------- timer start/stop ---------- */
 function clampSeconds(s){ return Math.max(MIN_SECONDS, Math.min(MAX_SECONDS, s)); }
-async function startCountdown(seconds, options={hide:false,resume:false}){ 
+function startCountdown(seconds, options={hide:false,resume:false}){
     if (!connected && !options.resume) { logError('请先连接设备才能设置定时'); return; }
     let sec = clampSeconds(seconds);
     if (seconds !== sec) log(`时间超出限制，已调整为 ${fmt(sec)}`);
@@ -929,22 +862,16 @@ async function startCountdown(seconds, options={hide:false,resume:false}){
     lockStatus = 'locked_timer';
     hideMode = !!options.hide;
     viewUsed = false;
-    
-    // 【核心修改：获取远程时间】
-    const nowRemote = await getRemoteTime(); 
 
     if (!options.resume){
         usedUnlockCount = 0; 
         lastUnlockTime = 0; 
-        // 记录锁定开始时间（使用远程时间）
-        lockStartTime = nowRemote; 
+        // 【核心修改：开始新定时，记录锁定开始时间】
+        lockStartTime = Date.now(); 
     }
     
-    if (!options.resume){ 
-        targetEnd = nowRemote + remaining*1000; // 使用远程时间设置目标结束
-    }
-    if (!targetEnd) targetEnd = nowRemote + remaining*1000; // 首次启动
-    
+    if (!options.resume){ targetEnd = Date.now() + remaining*1000; }
+    if (!targetEnd) targetEnd = Date.now() + remaining*1000;
 
     if (!options.resume){
         const { dataView } = buildCommand(true);
@@ -957,13 +884,8 @@ async function startCountdown(seconds, options={hide:false,resume:false}){
     }
     updateUI();
 
-    // 【修改：定时器回调函数内部】
-    timerId = setInterval(async ()=>{ 
-        // 每次定时器触发时，获取新的远程时间进行计算（更准确）
-        const currentRemoteTime = await getRemoteTime(); 
-        
-        remaining = Math.max(0, Math.floor((targetEnd - currentRemoteTime)/1000));
-        
+    timerId = setInterval(()=>{
+        remaining = Math.max(0, Math.floor((targetEnd - Date.now())/1000));
         if (remaining<=0){
             clearInterval(timerId); timerId=null; remaining=0; 
             
@@ -980,7 +902,7 @@ async function startCountdown(seconds, options={hide:false,resume:false}){
             updateUI();
             return;
         }
-        await updateUI();
+        updateUI();
     },1000);
 }
 
@@ -993,9 +915,9 @@ $('modeCountDown').addEventListener('click', ()=>{ selectedMode='countdown'; tog
 $('modeDate').addEventListener('click', ()=>{ selectedMode='date'; toggleModeUI(); });
 $('modeRandom').addEventListener('click', ()=>{ selectedMode='random'; toggleModeUI(); });
 function toggleModeUI(){
-    \( ('modeCountDown').classList.toggle('primary', selectedMode==='countdown'); \)('modeCountDown').classList.toggle('ghost', selectedMode!=='countdown');
-    \( ('modeDate').classList.toggle('primary', selectedMode==='date'); \)('modeDate').classList.toggle('ghost', selectedMode!=='date');
-    \( ('modeRandom').classList.toggle('primary', selectedMode==='random'); \)('modeRandom').classList.toggle('ghost', selectedMode!=='random');
+    $('modeCountDown').classList.toggle('primary', selectedMode==='countdown'); $('modeCountDown').classList.toggle('ghost', selectedMode!=='countdown');
+    $('modeDate').classList.toggle('primary', selectedMode==='date'); $('modeDate').classList.toggle('ghost', selectedMode!=='date');
+    $('modeRandom').classList.toggle('primary', selectedMode==='random'); $('modeRandom').classList.toggle('ghost', selectedMode!=='random');
     $('countdownBlock').style.display = selectedMode==='countdown' ? 'block' : 'none';
     $('dateBlock').style.display = selectedMode==='date' ? 'block' : 'none';
     $('randomBlock').style.display = selectedMode==='random' ? 'block' : 'none';
@@ -1006,7 +928,7 @@ let unlockCount = 0;
 let intervalDaysLocal = 0; 
 
 function renderSelectors(){
-    \( ('daysVal').textContent = days; \)('hoursVal').textContent = hours; $('minsVal').textContent = mins;
+    $('daysVal').textContent = days; $('hoursVal').textContent = hours; $('minsVal').textContent = mins;
     $('unlockCountVal').textContent = unlockCount; 
     $('intervalDaysVal').textContent = intervalDaysLocal;
 }
@@ -1057,12 +979,12 @@ function renderCalendar(){
     el.addEventListener('click', ()=>{ window._calendarSelectedDate = new Date(y,m,d, window._calendarSelectedDate?window._calendarSelectedDate.getHours():12, window._calendarSelectedDate?window._calendarSelectedDate.getMinutes():0,0); renderCalendar(); });
     grid.appendChild(el);
   }
-  \( ('monthLabel').textContent = ` \){y} 年 ${m+1} 月`;
+  $('monthLabel').textContent = `${y} 年 ${m+1} 月`;
 }
 $('prevMon').addEventListener('click', ()=>{ calMonth--; if(calMonth<0){calMonth=11;calYear--} renderCalendar(); });
 $('nextMon').addEventListener('click', ()=>{ calMonth++; if(calMonth>11){calMonth=0;calYear++} renderCalendar(); });
 
-let dateHour = 12, dateMin = 0; function renderDateHM(){ \( ('dateHour').textContent=dateHour; \)('dateMin').textContent=dateMin; }
+let dateHour = 12, dateMin = 0; function renderDateHM(){ $('dateHour').textContent=dateHour; $('dateMin').textContent=dateMin; }
 ['dateHourPlus','dateHourMinus','dateMinPlus','dateMinMinus'].forEach(id=>{
   $(id).addEventListener('click', ()=>{ if(id==='dateHourPlus') dateHour=(dateHour+1)%24; if(id==='dateHourMinus') dateHour=(dateHour+23)%24; if(id==='dateMinPlus') dateMin=(dateMin+5)%60; if(id==='dateMinMinus') dateMin=(dateMin+55)%60; renderDateHM(); });
 });
@@ -1089,20 +1011,11 @@ $('timerBtn').addEventListener('click', ()=>{
 });
 
 $('cancelTimer').addEventListener('click', ()=> hideModal('timerModal'));
-$('confirmTimer').addEventListener('click', async ()=>{ 
+$('confirmTimer').addEventListener('click', ()=>{
     if (lockStatus.startsWith('locked_timer') || lockStatus === 'unlocked_temp'){ showToast('无法设置定时', '当前已有进行中的定时任务', true); hideModal('timerModal'); return; }
     let sec = 0;
     if (selectedMode==='countdown'){ sec = days*86400 + hours*3600 + mins*60; }
-    else if (selectedMode==='date'){ 
-        if(!window._calendarSelectedDate){ showToast('请选择日期', '', true); return; } 
-        const dt = new Date(window._calendarSelectedDate); 
-        dt.setHours(dateHour, dateMin,0,0); 
-        // 【核心修改：使用远程时间计算秒数】
-        const nowRemote = await getRemoteTime(); 
-        sec = Math.floor((dt.getTime()-nowRemote)/1000); 
-        
-        if (sec>MAX_SECONDS){ log('选择日期超过 90 天上限，自动调整'); sec = MAX_SECONDS; } 
-    }
+    else if (selectedMode==='date'){ if(!window._calendarSelectedDate){ showToast('请选择日期', '', true); return; } const dt = new Date(window._calendarSelectedDate); dt.setHours(dateHour, dateMin,0,0); sec = Math.floor((dt.getTime()-Date.now())/1000); if (sec>MAX_SECONDS){ log('选择日期超过 90 天上限，自动调整'); sec = MAX_SECONDS; } }
     else { sec = Math.floor(Math.random()*(MAX_SECONDS-MIN_SECONDS+1))+MIN_SECONDS; }
     if (sec<=0){ showToast('请选择将来时间', '(>0 秒)', true); return; }
     const hideChecked = $('randomHide').checked;
@@ -1111,7 +1024,7 @@ $('confirmTimer').addEventListener('click', async ()=>{
     intervalDays = intervalDaysLocal; 
 
     hideModal('timerModal');
-    await startCountdown(sec, { hide: selectedMode==='random' && hideChecked });
+    startCountdown(sec, { hide: selectedMode==='random' && hideChecked });
 });
 
 /* ---------- lottery, view, guess logic ---------- */
@@ -1121,70 +1034,66 @@ $('lotteryBtn').addEventListener('click', ()=>{
     showModal('lotteryModal'); $('lotteryResult').style.display='none'; 
 });
 $('closeLottery').addEventListener('click', ()=> hideModal('lotteryModal'));
-$('doLottery').addEventListener('click', async ()=>{ 
+$('doLottery').addEventListener('click', ()=>{
     if (lockStatus !== 'locked_timer'){ log('抽奖仅在定时锁定状态下可用'); $('doLottery').disabled=false; return; }
     $('doLottery').disabled=true;
-    setTimeout(async ()=>{ 
+    setTimeout(()=>{ 
       const percent=Math.floor(Math.random()*51)+10; const add=Math.random()<0.5; const delta=Math.floor(remaining*(percent/100)); const prev=remaining;
       
       const newRemainingText = hideMode ? '时间已更新' : `新剩余 ${fmt(remaining)}`;
 
       if (add){ 
         remaining = Math.min(remaining+delta, MAX_SECONDS); 
-        \( ('lotteryMain').innerHTML=`<span style="color:#c7ffb3;font-weight:700">+ \){percent}%</span>`; 
-        \( ('lotteryDetail').textContent=`延长 \){fmt(delta)}，${newRemainingText}`;
+        $('lotteryMain').innerHTML=`<span style="color:#c7ffb3;font-weight:700">+${percent}%</span>`; 
+        $('lotteryDetail').textContent=`延长 ${fmt(delta)}，${newRemainingText}`;
       } else { 
         remaining = Math.max(remaining-delta, MIN_SECONDS); 
-        \( ('lotteryMain').innerHTML=`<span style="color:#ffb3a8;font-weight:700">- \){percent}%</span>`; 
-        \( ('lotteryDetail').textContent=`减少 \){fmt(delta)}，${newRemainingText}`;
+        $('lotteryMain').innerHTML=`<span style="color:#ffb3a8;font-weight:700">-${percent}%</span>`; 
+        $('lotteryDetail').textContent=`减少 ${fmt(delta)}，${newRemainingText}`;
       }
       
-      $('lotteryResult').style.display='block'; 
-      // 【使用远程时间设置 targetEnd】
-      targetEnd = await getRemoteTime() + remaining*1000; 
+      $('lotteryResult').style.display='block'; targetEnd = Date.now()+remaining*1000; 
       
       const {dataView} = buildCommand(true); 
       BleManager.sendData(dataView, `抽奖更新定时 (4 字节)`);
       
       const logRemaining = hideMode ? '时间已变化' : fmt(remaining); 
-      log(`抽奖结果：\( {add?'增加':'减少'} \){percent}%（\( {fmt(delta)}），新剩余 \){logRemaining}`); 
+      log(`抽奖结果：${add?'增加':'减少'} ${percent}%（${fmt(delta)}），新剩余 ${logRemaining}`); 
       
-      await updateUI();
-      $('doLottery').disabled=false; 
+      updateUI(); $('doLottery').disabled=false; 
     },1400);
 });
 
-\( ('closeView').addEventListener('click', async ()=>{ hideModal('viewModal'); \)('viewResult').style.display='none'; await saveState(); });
+$('closeView').addEventListener('click', ()=> { hideModal('viewModal'); $('viewResult').style.display='none'; saveState(); });
 
-$('doView').addEventListener('click', async ()=>{ 
+$('doView').addEventListener('click', ()=>{
     if (lockStatus !== 'locked_timer' || !connected) { logError('查看仅在定时锁定中可用'); hideModal('viewModal'); return; }
     if (viewUsed) { log('查看功能已使用过一次，阻止再次使用。'); hideModal('viewModal'); return; }
     
     $('doView').disabled=true;
 
-    setTimeout(async ()=>{ 
+    setTimeout(()=>{ 
       const pct=Math.floor(Math.random()*3)+1; 
       const delta=Math.floor(remaining*(pct/100)); 
       remaining = Math.min(remaining+delta, MAX_SECONDS);
       
       viewUsed=true; 
-      // 【使用远程时间设置 targetEnd】
-      targetEnd = await getRemoteTime() + remaining*1000;
+      targetEnd = Date.now()+remaining*1000;
       
       $('viewResult').style.display='block';
-      \( ('viewMain').textContent=`真实剩余： \){fmt(remaining)}`; 
-      \( ('viewDetail').textContent=`查看奖励：延长 \){pct}%（+${fmt(delta)}），下次不能再查看`;
+      $('viewMain').textContent=`真实剩余：${fmt(remaining)}`; 
+      $('viewDetail').textContent=`查看奖励：延长 ${pct}%（+${fmt(delta)}），下次不能再查看`;
       
       const {dataView} = buildCommand(true);
       BleManager.sendData(dataView, `查看奖励更新定时 (4 字节)`);
       
-      log(`查看（隐藏）奖励 +\( {pct}%（+ \){fmt(delta)}），新剩余 ${fmt(remaining)}`);
+      log(`查看（隐藏）奖励 +${pct}%（+${fmt(delta)}），新剩余 ${fmt(remaining)}`);
       
       const c=$('lockCircle'); 
       c.classList.add('flash-success'); 
       setTimeout(()=>c.classList.remove('flash-success'),1600);
       
-      await updateUI();
+      updateUI(); 
       
       $('doView').disabled=true;
       $('doView').textContent = '已使用';
@@ -1194,7 +1103,7 @@ $('doView').addEventListener('click', async ()=>{
 });
 
 let gDays=0,gHours=0,gMins=0;
-function renderGuess(){ \( ('gDays').textContent=gDays; \)('gHours').textContent=gHours; $('gMins').textContent=gMins; }
+function renderGuess(){ $('gDays').textContent=gDays; $('gHours').textContent=gHours; $('gMins').textContent=gMins; }
 ['gDaysPlus','gDaysMinus','gHoursPlus','gHoursMinus','gMinsPlus','gMinsMinus'].forEach(id=>{
   const el=$(id); if(!el) return; el.addEventListener('click', ()=>{ if(id==='gDaysPlus') gDays++; if(id==='gDaysMinus') gDays--; if(id==='gHoursPlus') gHours++; if(id==='gHoursMinus') gHours--; if(id==='gMinsPlus') gMins+=5; if(id==='gMinsMinus') gMins-=5; if(gDays<0)gDays=0; if(gDays>90)gDays=90; if(gHours<0)gHours=0; if(gHours>23)gHours=23; if(gMins<0)gMins=0; if(gMins>59)gMins=59; renderGuess(); });
 });
@@ -1204,7 +1113,7 @@ $('guessBtn').addEventListener('click', ()=>{
     showModal('guessModal'); renderGuess(); 
 });
 $('closeGuess').addEventListener('click', ()=> hideModal('guessModal'));
-$('doGuess').addEventListener('click', async ()=>{ 
+$('doGuess').addEventListener('click', ()=>{ 
   const guessed = gDays*86400 + gHours*3600 + gMins*60; 
   if(guessed<=0){ showToast('请输入有效猜测', '', true); return; } 
   
@@ -1214,21 +1123,19 @@ $('doGuess').addEventListener('click', async ()=>{
   
   if(success){ 
     remaining = Math.max(actual-delta, MIN_SECONDS); 
-    showToast(`猜对！减少 \( {pct}%`, `节省 \){fmt(delta)}，时间已更新`, false); 
-    log(`猜测成功（误差 \( {(err*100).toFixed(1)}%），减少 \){pct}%（-${fmt(delta)}），时间已变化`); 
+    showToast(`猜对！减少 ${pct}%`, `节省 ${fmt(delta)}，时间已更新`, false); 
+    log(`猜测成功（误差 ${(err*100).toFixed(1)}%），减少 ${pct}%（-${fmt(delta)}），时间已变化`); 
   } else { 
     remaining = Math.min(actual+delta, MAX_SECONDS); 
-    showToast(`猜错！增加 \( {pct}%`, `惩罚 \){fmt(delta)}，时间已更新`, true); 
-    log(`猜测失败（误差 \( {(err*100).toFixed(1)}%），增加 \){pct}%（+${fmt(delta)}），时间已变化`); 
+    showToast(`猜错！增加 ${pct}%`, `惩罚 ${fmt(delta)}，时间已更新`, true); 
+    log(`猜测失败（误差 ${(err*100).toFixed(1)}%），增加 ${pct}%（+${fmt(delta)}），时间已变化`); 
   } 
-  
-  // 【使用远程时间设置 targetEnd】
-  targetEnd = await getRemoteTime() + remaining*1000; 
+  targetEnd=Date.now()+remaining*1000; 
   
   const {dataView} = buildCommand(true); 
   BleManager.sendData(dataView, `猜时间更新定时 (4 字节)`); 
   
-  await updateUI();
+  updateUI(); 
 });
 
 /* ---------- Locktober AI 核心修复部分（最终版）---------- */
@@ -1244,7 +1151,7 @@ function detectAction(input) {
 
 async function generateLocktoberReply(userInput) {
   // 【核心修改：使用新的天数计算函数】
-  const day = await getLockDayForAI();
+  const day = getLockDayForAI(); 
   const remainingTimeStr = fmt(remaining); 
   const lockStateForAI = lockStatus === 'locked_timer' ? 
       `定时锁定中，剩余 ${remainingTimeStr}` : 
@@ -1323,19 +1230,19 @@ const daySpan = $('lockDay');
 const tags = $('aiTags');
 
 // 【修改：更新 AI 锁定天数】
-async function updateLocktoberDay() { 
-  const day = await getLockDayForAI();
+function updateLocktoberDay() {
+  const day = getLockDayForAI();
   daySpan.textContent = day;
   // 仅在首次打开时或没有消息时显示欢迎语
   if (messages.children.length <= 1) { 
     const welcomeMsg = document.querySelector('#aiMessages .ai-msg');
     if (welcomeMsg) {
-        welcomeMsg.innerHTML = `第 <strong>${day || 0}</strong> 天，主人～<br>你的 <span style="color:#ff6b9d">贞操锁</span> 已就位，<span style="color:#ff6b9d">钥匙</span> 被我含在嘴里了`;
+        welcomeMsg.innerHTML = `第 <strong>${day}</strong> 天，主人～<br>你的 <span style="color:#ff6b9d">贞操锁</span> 已就位，<span style="color:#ff6b9d">钥匙</span> 被我含在嘴里了`;
     }
   }
 }
 
-aiBtn.onclick = () => { panel.style.display = 'flex'; updateLocktoberDay(); };
+aiBtn.onclick = () => { panel.style.display = 'flex'; updateLocktoberDay(); }; // 打开时更新
 closeBtn.onclick = () => panel.style.display = 'none';
 
 let isDragging = false, startX, startY, startLeft, startTop;
@@ -1373,7 +1280,7 @@ async function sendAIMsg() {
   messages.appendChild(thinking);
   messages.scrollTop = messages.scrollHeight;
 
-  const result = await generateLocktoberReply(text); 
+  const result = await generateLocktoberReply(text);
   
   thinking.innerHTML = String(result.text || 'AI 未能生成回复。').replace(/\n/g, '<br>');
   tags.textContent = result.tag;
@@ -1385,13 +1292,13 @@ async function sendAIMsg() {
       const percentage = parseInt(controlMatch[2]);
       
       if (type === 'increase') {
-          await adjustTimeByAI(percentage, true);
+          adjustTimeByAI(percentage, true);
       } else if (type === 'decrease') {
-          await adjustTimeByAI(percentage, false);
+          adjustTimeByAI(percentage, false);
       }
   }
 
-  await updateLocktoberDay(); // 更新 AI 浮窗天数
+  updateLocktoberDay(); // 更新 AI 浮窗天数
   messages.scrollTop = messages.scrollHeight;
 }
 
@@ -1399,8 +1306,8 @@ sendBtn.onclick = sendAIMsg;
 aiInput.addEventListener('keypress', e => { if (e.key === 'Enter') sendAIMsg(); });
 
 // 启动欢迎语
-setTimeout(async () => { 
-  const day = await getLockDayForAI();
+setTimeout(() => {
+  const day = getLockDayForAI();
   addAIMsg(`第 <strong>${day || 0}</strong> 天，主人～<br>你的 <span style="color:#ff6b9d">贞操锁</span> 已就位，<span style="color:#ff6b9d">钥匙</span> 被我含在嘴里了`, 'ai');
   tags.textContent = "#lock";
 }, 1000);
@@ -1408,27 +1315,18 @@ setTimeout(async () => {
 // 【修改：每小时更新一次 AI 浮窗天数】
 setInterval(updateLocktoberDay, 3600000);
 
-/* ---------- init (启动函数) ---------- */
-async function init() { 
-    // 【修改：加载状态是异步的】
-    const had = await loadState(); 
-    
-    // UI 元素渲染（无需等待时间）
-    renderCalendar(); 
-    renderSelectors(); 
-    renderDateHM(); 
-    
-    if (!had) {
-        await updateUI();
-        log('v2.5.3 Web BLE 已就绪 — 请点击 "连接设备" 按钮开始。');
-    } else {
-        await updateUI(); 
-        log('恢复远程存储状态。请重新点击 "连接设备" 按钮连接 BLE 设备。');
-    }
+/* ---------- init ---------- */
+renderCalendar(); 
+renderSelectors(); 
+renderDateHM(); 
+const had = loadState();
+if (!had) {
+  updateUI();
+  log('v2.5.2 Web BLE 已就绪 — 请点击 "连接设备" 按钮开始。');
+} else {
+  updateUI(); 
+  log('恢复本地存储状态。请重新点击 "连接设备" 按钮连接 BLE 设备。');
 }
-
-// 启动应用
-init();
 </script>
 </body>
 </html>
