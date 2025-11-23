@@ -1394,4 +1394,42 @@ async function sendAIMsg() {
                   adjustTimeByAI(pct, isInc);
               } else {
                   // 即使是非定时模式，也显示一下“想调整但没定时”的提示
-                  showToast(isInc ? 'AI 想惩罚你' : 'AI
+                  showToast(isInc ? 'AI 想惩罚你' : 'AI 想奖励你', '但当前不是定时模式～', false);
+              }
+          }
+      }
+      // 忽略 #lock 和 #unlock，因为它们已经被更强大的 #ailock / #aiunlock 标签取代了
+  }
+
+  updateLocktoberDay();
+  messages.scrollTop = messages.scrollHeight;
+}
+
+sendBtn.onclick = sendAIMsg;
+aiInput.addEventListener('keypress', e => { if (e.key === 'Enter') sendAIMsg(); });
+
+// 启动欢迎语
+setTimeout(() => {
+  const day = getLockDayForAI();
+  addAIMsg(`第 <strong>${day || 0}</strong> 天，主人～<br>你的 <span style="color:#ff6b9d">贞操锁</span> 已就位，<span style="color:#ff6b9d">钥匙</span> 被我含在嘴里了`, 'ai');
+  tags.textContent = "#none";
+}, 1000);
+
+// 【修改：每小时更新一次 AI 浮窗天数】
+setInterval(updateLocktoberDay, 3600000);
+
+/* ---------- init ---------- */
+renderCalendar(); 
+renderSelectors(); 
+renderDateHM(); 
+const had = loadState();
+if (!had) {
+  updateUI();
+  log('v2.5.2 Web BLE (AI 接管版) 已就绪 — 请点击 "连接设备" 按钮开始。');
+} else {
+  updateUI(); 
+  log('恢复本地存储状态。请重新点击 "连接设备" 按钮连接 BLE 设备。');
+}
+</script>
+</body>
+</html>
