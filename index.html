@@ -356,6 +356,9 @@ let lastUnlockTime = 0;       // 上次成功中途解锁的时间戳
 // 【核心修改：替换 currentLockDay 为 lockStartTime】
 let lockStartTime = 0; // 记录最近一次上锁（手动/定时）的时间戳 (ms)
 
+// AI 是否正在“手动掌控钥匙”模式
+let aiManualLockEnabled = false; 
+
 /* BLE UUIDs */
 const SERVICE_UUID = '00008ac0-0000-1000-8000-00805f9b34fb';
 const WRITE_CHAR_UUID = '00008ac1-0000-1000-8000-00805f9b34fb';
@@ -386,6 +389,64 @@ function buildCommand(lock) {
     return { dataView, hexStr };
 }
 
+
+/* ========== 新增：AI 直接手动开关锁核心函数 (已修复语法错误) ========== */
+function aiDirectLock() {
+    if (!connected) {
+        showToast('AI 上锁失败', '设备未连接', true);
+        return false;
+    }
+    // 步骤 1: 清除定时状态
+    if (timerId){
+        clearInterval(timerId); timerId=null; targetEnd=null; total=0; remaining=0;
+        usedUnlockCount = 0; maxUnlockCount = 0; intervalDays = 0; lastUnlockTime = 0;
+        hideMode = false; viewUsed = false;
+    }
+    
+    // 步骤 2: 设置 AI 手动锁定状态
+    lockStatus = 'locked_manual';
+    lockStartTime = Date.now();                     // 记录手动上锁时间，AI 天数继续涨
+    aiManualLockEnabled = true;
+
+    // 步骤 3: 发送命令并更新
+    const { dataView } = buildCommand(true);
+    BleManager.sendData(dataView, 'AI 直接上锁（手动模式）');
+    
+    showToast('AI 已亲自给你上锁', '钥匙被我吞下去了', false);
+    log('Locktober AI 直接手动上锁（非定时）');
+    updateUI();
+    return true;
+}
+
+function aiDirectUnlock() {
+    if (!connected) {
+        showToast('AI 解锁失败', '设备未连接', true);
+        return false;
+    }
+    // 步骤 1: 清除所有状态
+    if (timerId){
+        clearInterval(timerId); timerId=null; targetEnd=null; total=0; remaining=0;
+        usedUnlockCount = 0; maxUnlockCount = 0; intervalDays = 0; lastUnlockTime = 0;
+        hideMode = false; viewUsed = false;
+    }
+    
+    // 步骤 2: 设置解锁状态
+    lockStatus = 'unlocked';
+    aiManualLockEnabled = false;
+    lockStartTime = 0;  // 手动解锁后天数归零
+
+    // 步骤 3: 发送命令并更新
+    const { dataView } = buildCommand(false);
+    BleManager.sendData(dataView, 'AI 直接解锁（手动模式）');
+    
+    showToast('AI 亲手给你解锁了', '这次是怜悯你了，下不为例', false);
+    log('Locktober AI 直接手动解锁');
+    updateUI();
+    return true;
+}
+/* ===================================================================== */
+
+
 /* ---------- localStorage persistence ---------- */
 const STORAGE_KEY = 'smartlock_v2_5_state';
 function saveState(){
@@ -394,7 +455,7 @@ function saveState(){
             lockStatus, total, remaining, targetEnd, hideMode, viewUsed, batteryLevel,
             maxUnlockCount, usedUnlockCount, intervalDays, lastUnlockTime,
             // 【修改：保存新状态】
-            lockStartTime 
+            lockStartTime, aiManualLockEnabled 
         };
         localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
     }catch(e){ console.warn('saveState err',e); }
@@ -419,6 +480,7 @@ function loadState(){
 
         // 【修改：加载新状态】
         lockStartTime = s.lockStartTime || 0;
+        aiManualLockEnabled = !!s.aiManualLockEnabled;
         
         if (s.targetEnd){
             targetEnd = s.targetEnd; 
@@ -429,7 +491,7 @@ function loadState(){
                 startCountdown(remaining, { hide: hideMode, resume:true });
             } else if (remaining <= 0){
                 // 【修改：过期时重置】
-                lockStatus = 'unlocked'; total=0; remaining=0; targetEnd=null; usedUnlockCount=0; lastUnlockTime=0; lockStartTime=0;
+                lockStatus = 'unlocked'; total=0; remaining=0; targetEnd=null; usedUnlockCount=0; lastUnlockTime=0; lockStartTime=0; aiManualLockEnabled = false;
                 log('恢复状态时发现倒计时已过期，已重置为未上锁');
             }
         }
@@ -459,6 +521,8 @@ function executeMidUnlock() {
     lockStatus = 'unlocked_temp';
     usedUnlockCount++;
     lastUnlockTime = Date.now();
+    // 清除 AI 手动锁状态
+    aiManualLockEnabled = false;
 
     const { dataView } = buildCommand(false);
     BleManager.sendData(dataView, '定时期间允许解锁 (4 字节)');
@@ -546,7 +610,7 @@ function updateUI(){
     const hasUnlockPermission = maxUnlockCount > 0; 
 
     if (lockStatus === 'locked_manual') {
-        lockStatusText = '手动上锁 (AI/用户)';
+        lockStatusText = aiManualLockEnabled ? 'AI 手动锁定' : '手动上锁';
     } else if (isTimerMode || isTempUnlocked) {
         const unlockLeft = maxUnlockCount - usedUnlockCount;
         lockStatusText = isTempUnlocked ? '临时解锁' : (hideMode ? '定时（隐藏）' : '定时锁定');
@@ -599,10 +663,19 @@ function updateUI(){
 
     } else if (lockStatus === 'locked_manual') {
         circle.style.background = 'conic-gradient(var(--accent) 360deg,#2a2a30 0deg)';
-        title.textContent = '手动锁定';
-        sub.textContent = '点击解锁';
+        
+        // 【已修改：判断是否是 AI 手动锁】
+        if (aiManualLockEnabled) {
+            title.textContent = 'AI 亲手锁住';
+            sub.textContent = '女王拿着钥匙';
+            circle.title = 'AI 手动锁定中，求她才能开';
+        } else {
+            title.textContent = '手动锁定';
+            sub.textContent = '点击解锁';
+            circle.title = '点击解锁';
+        }
+        
         circle.classList.add('locked_manual');
-        circle.title = '点击解锁';
     } else {
         circle.style.background = 'conic-gradient(var(--accent-2) 0deg,#2a2a30 0deg)';
         title.textContent = connected ? '已连接' : '未上锁';
@@ -755,7 +828,7 @@ midUnlockBtn.addEventListener('click', () => {
 
 $('lockCircle').addEventListener('click', ()=>{
     if (!connected) { logError('请先连接设备'); showToast('设备未连接', '请点击 "连接设备" 按钮', true); return; }
-
+    
     // 【新增：处理定时锁定中的查看/中途解锁逻辑】
     if (lockStatus === 'locked_timer') {
         const unlockLeft = maxUnlockCount - usedUnlockCount;
@@ -791,6 +864,7 @@ $('lockCircle').addEventListener('click', ()=>{
     // 【新增：处理临时解锁后的重锁逻辑】
     if (lockStatus === 'unlocked_temp'){
         lockStatus = 'locked_timer'; 
+        aiManualLockEnabled = false; // 临时解锁后重锁，不再是AI手动模式
         
         const { dataView } = buildCommand(true);
         BleManager.sendData(dataView, '手动恢复定时锁定 (4 字节)');
@@ -815,14 +889,16 @@ $('lockCircle').addEventListener('click', ()=>{
         if (isLockAction) {
             lockStatus = 'locked_manual';
             lockStartTime = Date.now(); 
+            aiManualLockEnabled = false; // 用户手动上锁，清除 AI 手动锁状态
         } else {
             lockStatus = 'unlocked';
             lockStartTime = 0; 
+            aiManualLockEnabled = false; // 用户手动解锁，清除 AI 手动锁状态
         }
 
         // 步骤 3: 发送命令并更新UI
         const { dataView } = buildCommand(isLockAction);
-        BleManager.sendData(dataView, isLockAction ? '手动上锁 (4 字节)' : '手动解锁 (4 字节)');
+        BleManager.sendData(dataView, isLockAction ? '用户手动上锁 (4 字节)' : '用户手动解锁 (4 字节)');
         showToast(isLockAction ? '手动锁定' : '已解锁', '当前为手动模式，定时状态已清除', false);
         updateUI();
         return;
@@ -857,6 +933,7 @@ function startCountdown(seconds, options={hide:false,resume:false}){
     lockStatus = 'locked_timer';
     hideMode = !!options.hide;
     viewUsed = false;
+    aiManualLockEnabled = false; // 定时模式，清除 AI 手动锁状态
 
     if (!options.resume){
         usedUnlockCount = 0; 
@@ -889,6 +966,7 @@ function startCountdown(seconds, options={hide:false,resume:false}){
             targetEnd=null; total=0; hideMode=false; viewUsed=false;
             // 【核心修改：定时结束，清除锁定开始时间】
             lockStartTime = 0;
+            aiManualLockEnabled = false;
 
             const { dataView } = buildCommand(false);
             BleManager.sendData(dataView, '自动解锁 (4 字节)');
@@ -1017,6 +1095,7 @@ $('confirmTimer').addEventListener('click', ()=>{
 
     maxUnlockCount = unlockCount; 
     intervalDays = intervalDaysLocal; 
+    aiManualLockEnabled = false; // 清除 AI 手动锁状态
 
     hideModal('timerModal');
     startCountdown(sec, { hide: selectedMode==='random' && hideChecked });
@@ -1137,10 +1216,7 @@ $('doGuess').addEventListener('click', ()=>{
 
 function detectAction(input) {
   if (typeof input !== 'string') return "#none";
-  if (/解锁|开锁|放出|临时/.test(input)) return "#unlock";
-  if (/上锁|继续|抽奖|查看|猜|电量/.test(input)) return "#lock";
-  // 【新增：检测 AI 时长控制标签】
-  if (/#(increase|decrease)\d+%/.test(input)) return input.toLowerCase().match(/#(increase|decrease)\d+%/)[0];
+  // 此函数用于兼容旧版本或确保在没有 AI 返回 tag 时的回退逻辑，但现在主要依赖 AI 返回的标签
   return "#none";
 }
 
@@ -1151,28 +1227,31 @@ async function generateLocktoberReply(userInput) {
   const lockStateForAI = lockStatus === 'locked_timer' ? 
       `定时锁定中，剩余 ${remainingTimeStr}` : 
       lockStatus === 'locked_manual' ? 
-      '手动锁定中' : '未上锁';
+      (aiManualLockEnabled ? 'AI 手动锁定中' : '用户手动锁定中') : '未上锁';
 
+  /* 修改 generateLocktoberReply 中的 prompt，加入手动开关锁指令（放在安全阀前面） */
   const prompt = `你是一个 Locktober AI 语言屠夫。
-  ---
-  当前锁定状态: ${lockStateForAI}
-  当前锁定天数/轮次: ${day} (根据上次上锁时间计算，不足一天算一天)
-  用户输入: “${userInput}”
-  
+---
+当前锁定状态: ${lockStateForAI}
+当前锁定天数/轮次: ${day} (根据上次上锁时间计算，不足一天算一天)
+用户输入: “${userInput}”
 
-  请用最淫荡、羞耻、下流的语言回应，融入禁欲、调教、臣服等元素。
-  属性温柔 暧昧
+请用最淫荡、羞耻、下流的语言回应，融入禁欲、调教、臣服等元素。
+属性温柔 暧昧
+
+【新增能力】你现在可以直接手动控制锁！
+- 想立刻给奴隶上锁 → 回复结尾加 #ailock
+- 想立刻给奴隶解锁 → 回复结尾加 #aiunlock
+（这会直接走手动锁模式，并清除所有定时状态）
+
 - 如果用户表现出**绝对臣服、完美顺从、完成羞耻任务**，可触发 #decreaseX% 作为“怜悯奖励”。
+- 使用 #increaseX% / #decreaseX% 调整定时时间（仅当当前是定时模式时生效）
 - 安全阀（强制立即解锁）：
-   - 若用户明确描述**真实身体不适/异常/受伤**（如“肿胀发紫”“破皮流血”“剧痛无法忍受”等），
-     **必须无条件立即执行 #decrease100% 并终止游戏**，回复中加入关怀语句
-  
-  回复结尾必须包含一个 action tag: #lock, #unlock, #increase, #decrease, 或 #none。
-  - 使用 #increaseX% (X为数字，如 #increase10%) 来增加定时时长，作为惩罚。
-  - 使用 #decreaseX% (X为数字，如 #decrease5%) 来减少定时时长，作为奖励。
-  - **使用 #lock 来手动锁定设备，此操作会清除现有定时并开始手动锁定。**
-  - **使用 #unlock 来手动解锁设备，此操作会清除现有定时和锁定状态。**
-  ---`;
+   若用户明确描述真实身体不适/受伤，必须无条件执行 #aiunlock 并终止游戏
+
+回复结尾必须包含一个 action tag，可多选，用空格分开。
+有效标签：#ailock #aiunlock #increase10% #decrease5% #lock #unlock #none
+---`;
 
   try {
     const res = await puter.ai.chat(prompt, { model: "deepseek-chat" });
@@ -1192,19 +1271,17 @@ async function generateLocktoberReply(userInput) {
 
     let finalReply = String(rawText).trim();
     
-    // 【修改：优先解析 AI 返回的 increase/decrease/lock/unlock 标签】
-    const controlMatch = finalReply.match(/#(increase|decrease)\d+%|#(lock|unlock|none)/i);
-    let actionTag = '#none';
+    // 【核心修改：解析所有标签】
+    const tagsMatch = finalReply.match(/(#(increase|decrease)\d+%|#(ailock|aiunlock|lock|unlock|none))/gi);
+    let actionTags = '#none';
 
-    if (controlMatch) {
-      actionTag = controlMatch[0].toLowerCase();
-      finalReply = finalReply.replace(controlMatch[0], '').trim();
-    } else {
-      // 否则使用用户输入检测
-      actionTag = detectAction(userInput);
+    if (tagsMatch) {
+      actionTags = tagsMatch.map(tag => tag.toLowerCase()).join(' ');
+      // 从回复文本中移除标签
+      finalReply = finalReply.replace(new RegExp(tagsMatch.join('|'), 'gi'), '').trim();
     }
     
-    return { text: finalReply || '主人～我湿了...', tag: actionTag };
+    return { text: finalReply || '主人～我湿了...', tag: actionTags };
 
   } catch (e) {
     console.error('AI 错误:', e);
@@ -1234,7 +1311,7 @@ function updateLocktoberDay() {
   if (messages.children.length <= 1) { 
     const welcomeMsg = document.querySelector('#aiMessages .ai-msg');
     if (welcomeMsg) {
-        welcomeMsg.innerHTML = `第 <strong>${day}</strong> 天，主人～<br>你的 <span style="color:#ff6b9d">贞操锁</span> 已就位，<span style="color:#ff6b9d">钥匙</span> 被我含在嘴里了`;
+        welcomeMsg.innerHTML = `第 <strong>${day || 0}</strong> 天，主人～<br>你的 <span style="color:#ff6b9d">贞操锁</span> 已就位，<span style="color:#ff6b9d">钥匙</span> 被我含在嘴里了`;
     }
   }
 }
@@ -1265,6 +1342,7 @@ function addAIMsg(text, who) {
   messages.scrollTop = messages.scrollHeight;
 }
 
+/* 修改 sendAIMsg() 中处理标签的部分（关键！） */
 async function sendAIMsg() {
   const text = aiInput.value.trim();
   if (!text) return;
@@ -1279,70 +1357,39 @@ async function sendAIMsg() {
 
   const result = await generateLocktoberReply(text);
   
-  thinking.innerHTML = String(result.text || 'AI 未能生成回复。').replace(/\n/g, '<br>');
-  tags.textContent = result.tag;
+  thinking.innerHTML = String(result.text || '主人～我湿了...').replace(/\n/g, '<br>');
+  
+  // 支持多个 tag，用空格分隔
+  const tagsFound = result.tag.split(/\s+/).filter(t => t.startsWith('#'));
 
-  // 【核心修改：处理 AI 控制标签】
-  const controlMatch = result.tag.match(/#(increase|decrease)(\d+)(%)/i);
-  
-  if (controlMatch) {
-      const type = controlMatch[1].toLowerCase();
-      const percentage = parseInt(controlMatch[2]);
-      
-      if (type === 'increase') {
-          adjustTimeByAI(percentage, true);
-      } else if (type === 'decrease') {
-          adjustTimeByAI(percentage, false);
-      }
-  } 
-  
-  // 【新增：处理 AI 直接开关锁标签】
-  else if (result.tag === '#lock') {
-      if (!connected) {
-          showToast('设备未连接', '请先连接设备才能操作', true);
-      } else if (lockStatus !== 'locked_manual') {
-          // 清除所有定时状态并设置为手动锁定
-          if (timerId){
-              clearInterval(timerId); timerId=null; targetEnd=null; total=0; remaining=0;
-              usedUnlockCount = 0; maxUnlockCount = 0; intervalDays = 0; lastUnlockTime = 0;
-              hideMode = false; viewUsed = false;
+  tags.textContent = tagsFound.join(' ') || '#none';
+
+  for (const tag of tagsFound) {
+      const t = tag.toLowerCase();
+
+      if (t === '#ailock') {
+          // AI 权限：直接手动上锁并清除定时
+          aiDirectLock();
+      } else if (t === '#aiunlock') {
+          // AI 权限：直接手动解锁并清除定时
+          aiDirectUnlock();
+      } else if (t.startsWith('#increase') || t.startsWith('#decrease')) {
+          const m = t.match(/#(increase|decrease)(\d+)%/i);
+          if (m) {
+              const isInc = m[1].toLowerCase() === 'increase';
+              const pct = parseInt(m[2]);
+              if (lockStatus === 'locked_timer') {
+                  adjustTimeByAI(pct, isInc);
+              } else {
+                  // 即使是非定时模式，也显示一下“想调整但没定时”的提示
+                  showToast(isInc ? 'AI 想惩罚你' : 'AI 想奖励你', '但当前不是定时模式～', false);
+              }
           }
-          lockStatus = 'locked_manual'; 
-          lockStartTime = Date.now(); // 记录锁定开始时间
-          
-          const { dataView } = buildCommand(true);
-          BleManager.sendData(dataView, 'AI 手动上锁 (4 字节)');
-          showToast('AI 权限：手动锁定', '所有定时状态已清除', false);
-          log('AI 触发手动上锁');
-      } else {
-          showToast('AI 操作无效', '已处于手动锁定状态', true);
       }
-  } 
-  
-  else if (result.tag === '#unlock') {
-      if (!connected) {
-          showToast('设备未连接', '请先连接设备才能操作', true);
-      } else if (lockStatus !== 'unlocked') {
-          // 清除所有定时和锁定状态并解锁
-          if (timerId){
-              clearInterval(timerId); timerId=null; targetEnd=null; total=0; remaining=0;
-              usedUnlockCount = 0; maxUnlockCount = 0; intervalDays = 0; lastUnlockTime = 0;
-              hideMode = false; viewUsed = false;
-          }
-          lockStatus = 'unlocked'; 
-          lockStartTime = 0; // 清除锁定开始时间
-          
-          const { dataView } = buildCommand(false);
-          BleManager.sendData(dataView, 'AI 手动解锁 (4 字节)');
-          showToast('AI 权限：解除锁定', '设备已解锁', false);
-          log('AI 触发解锁');
-      } else {
-          showToast('AI 操作无效', '已处于未上锁状态', true);
-      }
+      // 忽略 #lock 和 #unlock，因为它们已经被更强大的 #ailock / #aiunlock 标签取代了
   }
 
-  updateUI();
-  updateLocktoberDay(); // 更新 AI 浮窗天数
+  updateLocktoberDay();
   messages.scrollTop = messages.scrollHeight;
 }
 
@@ -1353,7 +1400,7 @@ aiInput.addEventListener('keypress', e => { if (e.key === 'Enter') sendAIMsg(); 
 setTimeout(() => {
   const day = getLockDayForAI();
   addAIMsg(`第 <strong>${day || 0}</strong> 天，主人～<br>你的 <span style="color:#ff6b9d">贞操锁</span> 已就位，<span style="color:#ff6b9d">钥匙</span> 被我含在嘴里了`, 'ai');
-  tags.textContent = "#lock";
+  tags.textContent = "#none";
 }, 1000);
 
 // 【修改：每小时更新一次 AI 浮窗天数】
