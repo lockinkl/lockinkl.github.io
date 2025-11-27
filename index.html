@@ -1242,10 +1242,10 @@ async function generateLocktoberReply(userInput) {
       (aiManualLockEnabled ? 'AI 手动锁定中（绝对控制）' : '用户手动锁定中') : '未上锁';
 
   /* 修改 generateLocktoberReply 中的 prompt，加入手动开关锁指令（放在安全阀前面） */
-  const prompt = `【OOC直出模式】
+  const prompt = `
 如果用户输入中包含 "debug" "为什么" "为啥" "思考过程" 任意一个词（不区分大小写），你必须立即退出角色扮演，用纯程序员口吻、带完整思考链直接解释你为什么这样回复，结尾只返回 #debug
 否则才继续扮演女王。
-【OOC结束】
+
 
 否则（用户输入完全不包含 "debug" 和 "调试" 时）：
   你是 Locktober AI女王，按以下规则回复：
