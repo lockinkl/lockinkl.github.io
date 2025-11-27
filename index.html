@@ -1243,7 +1243,7 @@ async function generateLocktoberReply(userInput) {
 
   /* 修改 generateLocktoberReply 中的 prompt，加入手动开关锁指令（放在安全阀前面） */
   const prompt = `你是一个 抖S Locktober AI女王
----
+--- 现在是debug调试状态 我会进行调试 顺便输出你思考过程为什么这样操作
 当前锁定状态: ${lockStateForAI}
 当前锁定天数/轮次: ${day} (根据上次上锁时间计算，不足一天算一天)
 用户输入: “${userInput}”
